@@ -237,13 +237,18 @@ def build_legacy_map(game_dir):
         for m in re.finditer(r'^(POI_[A-Z_]+)\s*=\s*(\d+)', open(ptf).read(), re.M):
             poi_types[m.group(1)] = int(m.group(2))
     poif = os.path.join(scripts_dir, "poi.lua")
+    poi_of_uuid = {}  # uuid bytes -> POI type name (1.0 tiles have no legacy id)
     if os.path.exists(poif):
         src = open(poif, encoding="utf-8", errors="replace").read()
         for m in re.finditer(r'addPoiTileLegacy\(\s*(POI_[A-Z_]+)\s*,\s*(\d+)\s*,\s*"(\$[^"]+)"', src):
             u = name_to_uuid.get(os.path.basename(m.group(3)))
             if u and m.group(1) in poi_types:
                 legacy[u] = poi_types[m.group(1)] * 100 + int(m.group(2))
-    return legacy, name_to_uuid
+        for m in re.finditer(r'addPoiTile\(\s*(POI_[A-Z_]+)\s*,\s*"(\$[^"]+)"\s*(?:,\s*([\w\d]+))?\)', src):
+            u = name_to_uuid.get(os.path.basename(m.group(2)))
+            if u and m.group(1) in poi_types:
+                poi_of_uuid[u] = m.group(1)
+    return legacy, name_to_uuid, poi_of_uuid
 
 
 def tile_size_cells(tile_filename):
@@ -298,7 +303,7 @@ def main():
             valid_legacy = set(int(x) for x in re.findall(r"\d+", m.group(1)))
 
     cell_data = parse_lua_pickle(decode_container(read_terrain_blob(save_path)))
-    legacy, name_to_uuid = build_legacy_map(game_dir)
+    legacy, name_to_uuid, poi_of_uuid = build_legacy_map(game_dir)
 
     bounds = cell_data["bounds"]
     uid = cell_data["uid"]
@@ -336,6 +341,9 @@ def main():
             if ox: c["ox"] = ox
             if oy: c["oy"] = oy
             if s > 1: c["s"] = s
+            poi_name = poi_of_uuid.get(cell_uuid.bytes)
+            if poi_name and (s == 1 or (ox == 0 and oy == 0)):
+                c["poi"] = poi_name  # anchor cell of this POI placement
             cells.append(c)
     if not cells:
         sys.exit("Terrain data decoded but empty?!")

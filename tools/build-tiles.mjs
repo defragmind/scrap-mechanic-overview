@@ -141,19 +141,29 @@ function getPoiUrl(poiType, tileid, x, y){
 }
 
 // --- POI anchors, resolved once for the whole build ---
+// Two sources: legacy tileid POIs (old worlds) and 1.0 uuid POI anchors
+// (cells carrying a `poi` name — growlab entrances, quest warehouses, …).
 function resolvePois(cells, b){
   const pois = [];
   const found = new Set();
+  const claim = (x, y, S) => { for (let ix = 0; ix < S; ix++) for (let iy = 0; iy < S; iy++) found.add(`${x+ix},${y+iy}`); };
+  // uuid POI anchors first (they have exact footprints via s)
+  for (const c of cells){
+    if (!c.poi) continue;
+    const S = Math.max(c.s ?? 1, POI_SIZES[c.poi] ?? 1);
+    if (found.has(`${c.x},${c.y}`)) continue;
+    claim(c.x, c.y, S);
+    pois.push({ x: c.x, y: c.y, name: c.poi, size: S, rotation: c.rotation,
+                url: getPoiUrl(c.poi, c.tileid, c.x, c.y) });
+  }
   for (const c of cells){
     const poiType = getPoiType(c.tileid);
     if (!poiType) continue;
     const S = POI_SIZES[poiType];
     if (S === undefined) continue;
-    const key = `${c.x},${c.y}`;
-    if (found.has(key)) continue; // already covered by an earlier anchor
+    if (found.has(`${c.x},${c.y}`)) continue;
     const url = getPoiUrl(poiType, c.tileid, c.x, c.y);
-    // mark this POI's cells as found (so we don't double-render)
-    for (let ix = 0; ix < S; ix++) for (let iy = 0; iy < S; iy++) found.add(`${c.x+ix},${c.y+iy}`);
+    claim(c.x, c.y, S);
     if (!url || !existsSync(url)) continue;
     pois.push({ x: c.x, y: c.y, name: poiType, size: S, rotation: c.rotation, url });
   }
@@ -221,7 +231,7 @@ async function waterCleanedTile(png, s){
     const ch = info.channels;
     for (let i = 0; i < side * side; i++){
       const r = data[i*ch], g = data[i*ch+1], b = data[i*ch+2];
-      const land = r >= b - 8 && Math.max(r, g, b) > 70;
+      const land = r >= b - 8;   // hue test only: blue-family = water; neutral darks are structure shadows
       if (!land) { data[i*ch] = COLOR.LAKE[0]; data[i*ch+1] = COLOR.LAKE[1]; data[i*ch+2] = COLOR.LAKE[2]; }
     }
     buf = await sharp(data, { raw: { width: side, height: side, channels: ch } }).png().toBuffer();
@@ -307,7 +317,17 @@ async function main(){
     grid.get(c.y).set(c.x, c);
   }
   const pois = resolvePois(cells, b);
-  console.log(`  ${pois.length} POI overlays resolved`);
+  // uuids belonging to ANY POI placement (anchors carry c.poi; covered cells share the uuid)
+  const poiUuids = new Set(cells.filter(c => c.poi).map(c => c.u));
+  // subset with overlay art: their covered cells draw nothing (the overlay replaces them)
+  const poiArtUuids = new Set();
+  for (const p of pois){
+    if (p.url && existsSync(p.url)){
+      const anchor = cells.find(c => c.poi === p.name && c.x === p.x && c.y === p.y);
+      if (anchor) poiArtUuids.add(anchor.u);
+    }
+  }
+  console.log(`  ${pois.length} POI overlays resolved (${[...new Set(pois.map(p=>p.name))].length} distinct types)`);
 
   // 0. prepare output dir (preserve the directory inode — see README troubleshooting)
   if (existsSync(OUT_TILES)) {
@@ -363,14 +383,19 @@ async function main(){
           layers.push({ input: await cellLayer(legacyPath, c.rotation), left, top: top_ });
           nImg++;
         } else if (c.u){
+          if (poiArtUuids.has(c.u)){
+            // covered by a POI overlay with art — the overlay draws this region
+            continue;
+          }
           const png = join(UUID_IMG_DIR, `${c.u}.png`);
           if (existsSync(png)){
             const s = c.s && c.s > 1 ? c.s : 1;
             const water = (ctype(c.flags) & 8) !== 0;
+            const isPoi = !!c.poi || poiUuids.has(c.u);
             let buf;
-            if (water){
+            if (water && !isPoi){
               // water-context tile: flatten blue-family pixels to ocean color;
-              // keep only above-water land (e.g. the excavation island)
+              // POI entrances are exempt (their structures can be blue-green too)
               buf = await sliceFromBuffer(await waterCleanedTile(png, s), s, c.ox ?? 0, c.oy ?? 0, c.rotation);
             } else if (s > 1) {
               buf = await tileSliceLayer(png, s, c.ox ?? 0, c.oy ?? 0, c.rotation);
@@ -401,8 +426,11 @@ async function main(){
         }
       }
     }
-    // POI overlays (span multiple cells; crop to band)
+    // POI overlays (span multiple cells; crop to band). Overlays WITH art replace
+    // the underlying preview slices entirely (hideouts, warehouses, …); POIs
+    // without art fall through to raw slices + a manifest label.
     for (const poi of pois){
+      if (!poi.url || !existsSync(poi.url)) continue;
       const S = poi.size;
       const pxLeft = px(poi.x);
       const pxTop = py(poi.y + S - 1);            // north edge; anchor (x,y) is the SW corner
