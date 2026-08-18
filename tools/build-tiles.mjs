@@ -204,13 +204,46 @@ async function bigTileBuffer(url, rotation, side){
   return buf;
 }
 
+// 1.0 water-context tiles (deep-ocean Lake(1111) variants, underwater entrances,
+// random/ruin lake decorations) have no legacy map art, and their preview PNGs
+// are dark-teal underwater renders — drawn raw they read as dark "mini tiles"
+// against the classic bright-blue ocean. Policy: keep only clearly above-water
+// pixels (warm/neutral: r >= b-8 and not near-black) and flatten everything
+// blue-family to the classic LAKE color, matching the 0.7.4 ocean look.
+const waterCleanedCache = new Map();
+async function waterCleanedTile(png, s){
+  const key = `${png}|${s}`;
+  let buf = waterCleanedCache.get(key);
+  if (buf === undefined) {
+    const side = s * PPC;
+    const { data, info } = await sharp(png).resize(side, side, { fit:"fill" })
+      .raw().toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    for (let i = 0; i < side * side; i++){
+      const r = data[i*ch], g = data[i*ch+1], b = data[i*ch+2];
+      const land = r >= b - 8 && Math.max(r, g, b) > 70;
+      if (!land) { data[i*ch] = COLOR.LAKE[0]; data[i*ch+1] = COLOR.LAKE[1]; data[i*ch+2] = COLOR.LAKE[2]; }
+    }
+    buf = await sharp(data, { raw: { width: side, height: side, channels: ch } }).png().toBuffer();
+    waterCleanedCache.set(key, buf);
+  }
+  return buf;
+}
+
+// Slice of a prepared full-size (s*PPC square) tile buffer for cell offset (ox,oy)
+async function sliceFromBuffer(fullBuf, s, ox, oy, rotation){
+  const deg = ROT[rotation] ?? 0;
+  return sharp(fullBuf)
+    .extract({ left: Math.min(ox, s-1) * PPC, top: Math.min(oy, s-1) * PPC, width: PPC, height: PPC })
+    .rotate(deg)
+    .toBuffer();
+}
+
 // 1.0 multi-cell tiles are MOSAICS: every covered cell carries the tile uuid plus
 // xOffset/yOffset = its position within the tile (engine: sm.terrainTile.getHeightAt(
 // uid, tileCellOffsetX, tileCellOffsetY, ...) samples the tile at that offset).
 // So each cell renders the (ox,oy) slice of the s×s-scaled tile image, rotated by
-// the cell's rotation — never the whole tile stamped per cell, and never only at
-// anchors (scattered placements like the excavation island don't converge to one
-// origin; each cell really does show its own slice).
+// the cell's rotation.
 const sliceCache = new Map();
 async function tileSliceLayer(png, s, ox, oy, rotation){
   const deg = ROT[rotation] ?? 0;
@@ -333,9 +366,17 @@ async function main(){
           const png = join(UUID_IMG_DIR, `${c.u}.png`);
           if (existsSync(png)){
             const s = c.s && c.s > 1 ? c.s : 1;
-            const buf = s > 1
-              ? await tileSliceLayer(png, s, c.ox ?? 0, c.oy ?? 0, c.rotation)
-              : await cellLayer(png, c.rotation);
+            const water = (ctype(c.flags) & 8) !== 0;
+            let buf;
+            if (water){
+              // water-context tile: flatten blue-family pixels to ocean color;
+              // keep only above-water land (e.g. the excavation island)
+              buf = await sliceFromBuffer(await waterCleanedTile(png, s), s, c.ox ?? 0, c.oy ?? 0, c.rotation);
+            } else if (s > 1) {
+              buf = await tileSliceLayer(png, s, c.ox ?? 0, c.oy ?? 0, c.rotation);
+            } else {
+              buf = await cellLayer(png, c.rotation);
+            }
             layers.push({ input: buf, left, top: top_ });
             nImg++;
           } else {
