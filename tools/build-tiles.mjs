@@ -204,6 +204,30 @@ async function bigTileBuffer(url, rotation, side){
   return buf;
 }
 
+// 1.0 multi-cell tiles are MOSAICS: every covered cell carries the tile uuid plus
+// xOffset/yOffset = its position within the tile (engine: sm.terrainTile.getHeightAt(
+// uid, tileCellOffsetX, tileCellOffsetY, ...) samples the tile at that offset).
+// So each cell renders the (ox,oy) slice of the s×s-scaled tile image, rotated by
+// the cell's rotation — never the whole tile stamped per cell, and never only at
+// anchors (scattered placements like the excavation island don't converge to one
+// origin; each cell really does show its own slice).
+const sliceCache = new Map();
+async function tileSliceLayer(png, s, ox, oy, rotation){
+  const deg = ROT[rotation] ?? 0;
+  const key = `${png}|${s}|${ox}|${oy}|${deg}`;
+  let buf = sliceCache.get(key);
+  if (buf === undefined) {
+    const side = s * PPC;
+    buf = await sharp(png)
+      .resize(side, side, { fit:"fill" })
+      .extract({ left: Math.min(ox, s-1) * PPC, top: Math.min(oy, s-1) * PPC, width: PPC, height: PPC })
+      .rotate(deg)
+      .toBuffer();
+    sliceCache.set(key, buf);
+  }
+  return buf;
+}
+
 // Road segment rectangles for a cell, in absolute full-map pixel coords
 function roadRects(f, left, top){
   const rects = [];
@@ -305,28 +329,14 @@ async function main(){
         if (legacyPath && existsSync(legacyPath)){
           layers.push({ input: await cellLayer(legacyPath, c.rotation), left, top: top_ });
           nImg++;
-        } else if (c.u && c.s && c.s > 1){
-          // multi-cell tile without legacy art: the game's preview PNG, drawn ONCE
-          // at the placement anchor (offsets 0,0) spanning s×s cells — never per cell
-          if (!(c.ox) && !(c.oy)){
-            const png = join(UUID_IMG_DIR, `${c.u}.png`);
-            if (existsSync(png)){
-              const S = c.s, side = S * PPC;
-              const cr = vCrop(py(c.y + S - 1), side, bandTop, bandBottom);
-              if (cr){
-                const full = await bigTileBuffer(png, c.rotation, side);
-                const cropBuf = await sharp(full).extract({ left:0, top:cr.extractTop, width:side, height:cr.height }).toBuffer();
-                layers.push({ input: cropBuf, left: px(c.x), top: cr.compTop - bandTop });
-                nImg++;
-                nBig++;
-              }
-            }
-          }
-          // covered cells of this placement (ox/oy ≠ 0) draw nothing — the anchor covers them
-        } else {
-          const png = c.u ? join(UUID_IMG_DIR, `${c.u}.png`) : null;
-          if (png && existsSync(png)){
-            layers.push({ input: await cellLayer(png, c.rotation), left, top: top_ });
+        } else if (c.u){
+          const png = join(UUID_IMG_DIR, `${c.u}.png`);
+          if (existsSync(png)){
+            const s = c.s && c.s > 1 ? c.s : 1;
+            const buf = s > 1
+              ? await tileSliceLayer(png, s, c.ox ?? 0, c.oy ?? 0, c.rotation)
+              : await cellLayer(png, c.rotation);
+            layers.push({ input: buf, left, top: top_ });
             nImg++;
           } else {
             for (const rct of roadRects(c.flags, left, py(y))){
@@ -337,6 +347,15 @@ async function main(){
               layers.push({ input: rb, left: rct.left, top: cr.compTop - bandTop });
               nRoad++;
             }
+          }
+        } else {
+          for (const rct of roadRects(c.flags, left, py(y))){
+            const cr = vCrop(rct.top, rct.height, bandTop, bandBottom);
+            if (!cr) continue;
+            const rb = await sharp({ create:{ width:rct.width, height:cr.height, channels:4,
+              background:{ r:120, g:120, b:120, alpha:1 } } }).png().toBuffer();
+            layers.push({ input: rb, left: rct.left, top: cr.compTop - bandTop });
+            nRoad++;
           }
         }
       }
@@ -404,20 +423,25 @@ async function main(){
     await pool(tasks, async ({ tx, ty }) => {
       const half = TS / 2;
       const comps = [];
-      // clamp child coords to the existing grid (edge padding mirrors edge pixels)
+      // child grid extent at z+1; children outside the world extent DO NOT EXIST —
+      // skip them (clamping would duplicate edge strips into the padding, which
+      // used to stack the whole map twice at the lowest zooms)
       const czX = Math.ceil((fullW / 2 ** (maxZoom - z - 1)) / TS);
       const czY = Math.ceil((fullH / 2 ** (maxZoom - z - 1)) / TS);
       for (let dy = 0; dy < 2; dy++){
         for (let dx = 0; dx < 2; dx++){
-          const cx = Math.min(2*tx + dx, czX - 1);
-          const cy = Math.min(2*ty + dy, czY - 1);
+          const cx = 2*tx + dx, cy = 2*ty + dy;
+          if (cx >= czX || cy >= czY) continue;
           const childPath = join(OUT_TILES, String(z+1), String(cx), `${cy}.webp`);
           if (!existsSync(childPath)) continue;
           const buf = await sharp(childPath).resize(half, half, { kernel:"lanczos3" }).toBuffer();
           comps.push({ input: buf, left: dx*half, top: dy*half });
         }
       }
-      const canvas = sharp({ create:{ width:TS, height:TS, channels:4, background:{ r:0, g:0, b:0, alpha:1 } } });
+      // ocean-colored padding where the world doesn't reach (world aspect isn't 2:1,
+      // so low zooms always have some padding on the right/bottom)
+      const canvas = sharp({ create:{ width:TS, height:TS, channels:4,
+        background:{ r:COLOR.LAKE[0], g:COLOR.LAKE[1], b:COLOR.LAKE[2], alpha:1 } } });
       const dir = join(OUT_TILES, String(z), String(tx));
       mkdirSync(dir, { recursive:true });
       await canvas.composite(comps).webp({ quality: 85 }).toFile(join(dir, `${ty}.webp`));
