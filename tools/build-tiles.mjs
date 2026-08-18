@@ -69,7 +69,18 @@ const START = {
   "-37,-39":"start_crashsite_-37_-39.jpg","-37,-40":"start_crashsite_-37_-40.jpg",
   "-36,-40":"start_crashsite_-36_-40.jpg","-36,-41":"start_crashsite_-36_-41.jpg",
 };
-function tileImg(id, x, y){
+const UUID_IMG_DIR = join(IMG_DIR, "uuid"); // 1.0 tiles without legacy art (game preview PNGs)
+function tileImg(id, x, y, uhex){
+  if (uhex){
+    const legacyPath = tileImgLegacy(id, x, y);
+    if (legacyPath) return legacyPath;
+    const png = join(UUID_IMG_DIR, `${uhex}.png`);
+    if (existsSync(png)) return png;
+    return null;
+  }
+  return tileImgLegacy(id, x, y);
+}
+function tileImgLegacy(id, x, y){
   if (id === -1 || id === undefined || id === null) return null; // 1.0 tile without legacy id
   const st = START[`${x},${y}`];
   if (st) return join(IMG_DIR, st);     // start_crashsite_-3x_-4x live in img/ root, not img/tiles/
@@ -172,10 +183,18 @@ async function pool(items, worker, concurrency = 8){
   process.stdout.write("\n");
 }
 
-// Prepare one composite layer buffer for a cell image (rotate + resize to PPC²)
+// Prepare one composite layer buffer for a cell image (rotate + resize to PPC²).
+// Cached: worlds reuse the same ~470 source images thousands of times over.
+const layerCache = new Map();
 async function cellLayer(path, rotation){
   const deg = ROT[rotation] ?? 0;
-  return sharp(path).rotate(deg).resize(PPC, PPC, { fit:"fill" }).toBuffer();
+  const key = `${path}|${deg}`;
+  let buf = layerCache.get(key);
+  if (buf === undefined) {
+    buf = await sharp(path).rotate(deg).resize(PPC, PPC, { fit:"fill" }).toBuffer();
+    layerCache.set(key, buf);
+  }
+  return buf;
 }
 
 // Road segment rectangles for a cell, in absolute full-map pixel coords
@@ -274,7 +293,7 @@ async function main(){
         const x = b.xMin + cx;
         const c = row.get(x);
         if (!c) continue;
-        const p = tileImg(c.tileid, x, y);
+        const p = tileImg(c.tileid, x, y, c.u);
         const left = px(x), top_ = py(y) - bandTop; // band-relative top
         if (p && existsSync(p)){
           layers.push({ input: await cellLayer(p, c.rotation), left, top: top_ });
