@@ -41,10 +41,12 @@ const numOpt = (name, dflt) => {
 const CELLS_JSON = argCells || join(VIEWER_PUBLIC, "data", "cells.json");
 const PPC = numOpt("--ppc", 512);
 const BAND = Math.max(1, numOpt("--band", 6));
-const TS = 256; // output tile size
+const TS = 512; // output tile size (512 = 4× fewer requests while panning than 256)
 
 // --- terrain types + colors (matches legacy/style.css) ---
-const TAGS = ["NONE","MEADOW","FOREST","DESERT","FIELD","BURNTFOREST","AUTUMNFOREST","MOUNTAIN","LAKE"];
+// Terrain type nibble (flags bits 12-15), 1.0 semantics: bit 3 = water,
+// low 3 bits = base terrain type.
+const TAGS = ["NONE","MEADOW","FOREST","DESERT","FIELD","BURNTFOREST","AUTUMNFOREST","MOUNTAIN"];
 const COLOR = {
   NONE:[0,255,143], MEADOW:[0,232,93], FOREST:[0,188,27], DESERT:[255,222,147],
   FIELD:[164,224,126], BURNTFOREST:[158,138,92], AUTUMNFOREST:[242,187,7],
@@ -53,6 +55,7 @@ const COLOR = {
 // rotation value -> clockwise degrees (matches legacy CSS rot-N classes)
 const ROT = { 0:0, 1:270, 2:180, 3:90 };
 const ctype = f => (Math.floor(f) & 0xf000) >> 12;
+const terrainColor = f => { const n = ctype(f); return (n & 8) ? COLOR.LAKE : (COLOR[TAGS[n & 7]] || COLOR.NONE); };
 
 // road flags
 const RN=0x0200, RS=0x0800, RE_=0x0100, RW=0x0400, MASKR=0x0f00;
@@ -70,16 +73,6 @@ const START = {
   "-36,-40":"start_crashsite_-36_-40.jpg","-36,-41":"start_crashsite_-36_-41.jpg",
 };
 const UUID_IMG_DIR = join(IMG_DIR, "uuid"); // 1.0 tiles without legacy art (game preview PNGs)
-function tileImg(id, x, y, uhex){
-  if (uhex){
-    const legacyPath = tileImgLegacy(id, x, y);
-    if (legacyPath) return legacyPath;
-    const png = join(UUID_IMG_DIR, `${uhex}.png`);
-    if (existsSync(png)) return png;
-    return null;
-  }
-  return tileImgLegacy(id, x, y);
-}
 function tileImgLegacy(id, x, y){
   if (id === -1 || id === undefined || id === null) return null; // 1.0 tile without legacy id
   const st = START[`${x},${y}`];
@@ -197,6 +190,20 @@ async function cellLayer(path, rotation){
   return buf;
 }
 
+// Rotated full-size buffer for a multi-cell tile (S×S cells square). Cached per
+// (path, rotation, side); bands then extract their vertical slice cheaply.
+const bigCache = new Map();
+async function bigTileBuffer(url, rotation, side){
+  const deg = ROT[rotation] ?? 0;
+  const key = `${url}|${deg}|${side}`;
+  let buf = bigCache.get(key);
+  if (buf === undefined) {
+    buf = await sharp(url).rotate(deg).resize(side, side, { fit:"fill" }).toBuffer();
+    bigCache.set(key, buf);
+  }
+  return buf;
+}
+
 // Road segment rectangles for a cell, in absolute full-map pixel coords
 function roadRects(f, left, top){
   const rects = [];
@@ -258,7 +265,7 @@ async function main(){
 
   // 1. render maxZoom in bands of BAND cell rows
   console.log(`rendering max zoom z${maxZoom} in bands…`);
-  let nImg = 0, nRoad = 0;
+  let nImg = 0, nRoad = 0, nBig = 0;
   const nBands = Math.ceil(H / BAND);
   for (let band = 0; band < nBands; band++){
     const tBand = Date.now();
@@ -277,7 +284,7 @@ async function main(){
         const x = b.xMin + cx;
         const c = row?.get(x);
         const t = c ? ctype(c.flags) : 8; // LAKE outside generated data
-        const col = COLOR[TAGS[t]] || COLOR.NONE;
+        const col = c ? terrainColor(c.flags) : COLOR.LAKE;
         const i = (r * W + cx) * 4;
         colorBuf[i]=col[0]; colorBuf[i+1]=col[1]; colorBuf[i+2]=col[2]; colorBuf[i+3]=255;
       }
@@ -293,19 +300,43 @@ async function main(){
         const x = b.xMin + cx;
         const c = row.get(x);
         if (!c) continue;
-        const p = tileImg(c.tileid, x, y, c.u);
+        const legacyPath = tileImgLegacy(c.tileid, x, y);
         const left = px(x), top_ = py(y) - bandTop; // band-relative top
-        if (p && existsSync(p)){
-          layers.push({ input: await cellLayer(p, c.rotation), left, top: top_ });
+        if (legacyPath && existsSync(legacyPath)){
+          layers.push({ input: await cellLayer(legacyPath, c.rotation), left, top: top_ });
           nImg++;
+        } else if (c.u && c.s && c.s > 1){
+          // multi-cell tile without legacy art: the game's preview PNG, drawn ONCE
+          // at the placement anchor (offsets 0,0) spanning s×s cells — never per cell
+          if (!(c.ox) && !(c.oy)){
+            const png = join(UUID_IMG_DIR, `${c.u}.png`);
+            if (existsSync(png)){
+              const S = c.s, side = S * PPC;
+              const cr = vCrop(py(c.y + S - 1), side, bandTop, bandBottom);
+              if (cr){
+                const full = await bigTileBuffer(png, c.rotation, side);
+                const cropBuf = await sharp(full).extract({ left:0, top:cr.extractTop, width:side, height:cr.height }).toBuffer();
+                layers.push({ input: cropBuf, left: px(c.x), top: cr.compTop - bandTop });
+                nImg++;
+                nBig++;
+              }
+            }
+          }
+          // covered cells of this placement (ox/oy ≠ 0) draw nothing — the anchor covers them
         } else {
-          for (const rct of roadRects(c.flags, left, py(y))){
-            const cr = vCrop(rct.top, rct.height, bandTop, bandBottom);
-            if (!cr) continue;
-            const rb = await sharp({ create:{ width:rct.width, height:cr.height, channels:4,
-              background:{ r:120, g:120, b:120, alpha:1 } } }).png().toBuffer();
-            layers.push({ input: rb, left: rct.left, top: cr.compTop - bandTop });
-            nRoad++;
+          const png = c.u ? join(UUID_IMG_DIR, `${c.u}.png`) : null;
+          if (png && existsSync(png)){
+            layers.push({ input: await cellLayer(png, c.rotation), left, top: top_ });
+            nImg++;
+          } else {
+            for (const rct of roadRects(c.flags, left, py(y))){
+              const cr = vCrop(rct.top, rct.height, bandTop, bandBottom);
+              if (!cr) continue;
+              const rb = await sharp({ create:{ width:rct.width, height:cr.height, channels:4,
+                background:{ r:120, g:120, b:120, alpha:1 } } }).png().toBuffer();
+              layers.push({ input: rb, left: rct.left, top: cr.compTop - bandTop });
+              nRoad++;
+            }
           }
         }
       }
@@ -318,8 +349,7 @@ async function main(){
       const side = S * PPC;
       const cr = vCrop(pxTop, side, bandTop, bandBottom);
       if (!cr) continue;
-      const deg = ROT[poi.rotation] ?? 0;
-      const full = await sharp(poi.url).rotate(deg).resize(side, side, { fit:"fill" }).toBuffer();
+      const full = await bigTileBuffer(poi.url, poi.rotation, side);
       const cropBuf = await sharp(full).extract({ left:0, top:cr.extractTop, width:side, height:cr.height }).toBuffer();
       layers.push({ input: cropBuf, left: pxLeft, top: cr.compTop - bandTop });
     }

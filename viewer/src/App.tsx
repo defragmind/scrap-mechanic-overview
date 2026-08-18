@@ -12,7 +12,7 @@ export default function App() {
   const [selected, setSelected] = useState<CellInfo | null>(null);
   const [showPoiLabels, setShowPoiLabels] = useState(true);
   const mapRef = useRef<MapViewHandle>(null);
-  const { markers, addMarker, removeMarker, updateMarker } = useMarkers();
+  const { markers, addMarker, removeMarker, updateMarker } = useMarkers(manifest?.seed ?? null);
 
   useEffect(() => {
     let cancelled = false;

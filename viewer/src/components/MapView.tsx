@@ -42,8 +42,7 @@ export const MapView = forwardRef<MapViewHandle, Props>(function MapView(
       crs: L.CRS.Simple,
       minZoom: 0,
       maxZoom: maxZoom + 1,
-      zoomSnap: 0.5,
-      zoomDelta: 0.5,
+      zoomSnap: 1,
       wheelPxPerZoomLevel: 120,
       attributionControl: true,
     });
@@ -54,11 +53,16 @@ export const MapView = forwardRef<MapViewHandle, Props>(function MapView(
     const mapBounds = L.latLngBounds(southWest, northEast);
 
     L.tileLayer("/tiles/{z}/{x}/{y}.webp", {
-      tileSize: 256,
+      tileSize: manifest.tileSize ?? 256,
       noWrap: true,
       bounds: mapBounds,
       minNativeZoom: 0,
       maxNativeZoom: maxZoom,
+      // load tiles during pans (not only after) and keep more off-screen —
+      // kills the torn/repeated-columns look while panning
+      updateWhenIdle: false,
+      updateWhenZooming: false,
+      keepBuffer: 6,
       attribution:
         '<a target="_blank" href="https://github.com/the1killer/sm_overview">sm_overview</a> · React viewer',
     }).addTo(map);

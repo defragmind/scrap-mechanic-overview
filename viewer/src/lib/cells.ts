@@ -16,8 +16,9 @@ const POIS: Record<number, string> = {
 };
 
 export const cellType = (flags: number): string => {
-  const t = (Math.floor(flags) & 0xf000) >> 12;
-  return TAGS[t] ?? "NONE";
+  // 1.0 semantics: bit 3 of the type nibble = water, low 3 bits = base terrain
+  const nib = (Math.floor(flags) & 0xf000) >> 12;
+  return (nib & 8) ? "LAKE" : (TAGS[nib & 7] ?? "NONE");
 };
 const poiType = (tileid: number): string | undefined => {
   const t = Math.floor(tileid / 100);

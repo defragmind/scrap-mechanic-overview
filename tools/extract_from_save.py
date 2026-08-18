@@ -243,7 +243,17 @@ def build_legacy_map(game_dir):
             u = name_to_uuid.get(os.path.basename(m.group(3)))
             if u and m.group(1) in poi_types:
                 legacy[u] = poi_types[m.group(1)] * 100 + int(m.group(2))
-    return legacy
+    return legacy, name_to_uuid
+
+
+def tile_size_cells(tile_filename):
+    """Tiles encode their footprint in the filename: Foo_256_01.tile = 256 units
+    = 4×4 cells (CELL_SIZE = 64). Defaults to 1×1."""
+    m = re.search(r"_(\d+)_\d{2}\.tile$", tile_filename)
+    if m:
+        n = max(1, int(m.group(1)) // 64)
+        return n if n in (1, 2, 4, 8, 16) else 1
+    return 1
 
 
 def main():
@@ -288,23 +298,45 @@ def main():
             valid_legacy = set(int(x) for x in re.findall(r"\d+", m.group(1)))
 
     cell_data = parse_lua_pickle(decode_container(read_terrain_blob(save_path)))
-    legacy = build_legacy_map(game_dir)
+    legacy, name_to_uuid = build_legacy_map(game_dir)
 
     bounds = cell_data["bounds"]
     uid = cell_data["uid"]
     used_uuids = {}
+    size_of = {}  # uuid hex -> tile footprint in cells
     cells = []
+    nil_uuid = uuid_mod.UUID(int=0)
     for y in sorted(uid):
         row = uid[y]
         for x in sorted(row):
             cell_uuid = row[x]
+            if cell_uuid == nil_uuid:
+                # covered cell of a multi-cell tile (or empty ocean) — no art of its own
+                cells.append({"x": x, "y": y, "tileid": -1, "u": "",
+                              "flags": cell_data["flags"][y][x],
+                              "rotation": cell_data["rotation"][y][x]})
+                continue
             lid = legacy.get(cell_uuid.bytes, -1)
             uhex = cell_uuid.hex
             if lid == -1 or lid not in valid_legacy:
                 used_uuids[uhex] = True
-            cells.append({"x": x, "y": y, "tileid": lid, "u": uhex,
-                          "flags": cell_data["flags"][y][x],
-                          "rotation": cell_data["rotation"][y][x]})
+                if uhex not in size_of:
+                    # find this tile's filename for its footprint
+                    size_of[uhex] = 1
+                    for fname, ub in name_to_uuid.items():
+                        if ub == cell_uuid.bytes:
+                            size_of[uhex] = tile_size_cells(fname)
+                            break
+            c = {"x": x, "y": y, "tileid": lid, "u": uhex,
+                 "flags": cell_data["flags"][y][x],
+                 "rotation": cell_data["rotation"][y][x]}
+            ox = cell_data["xOffset"][y][x]
+            oy = cell_data["yOffset"][y][x]
+            s = size_of.get(uhex, 1)
+            if ox: c["ox"] = ox
+            if oy: c["oy"] = oy
+            if s > 1: c["s"] = s
+            cells.append(c)
     if not cells:
         sys.exit("Terrain data decoded but empty?!")
     cells[0]["bounds"] = bounds
