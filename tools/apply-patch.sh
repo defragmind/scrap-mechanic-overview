@@ -8,8 +8,10 @@
 #   STEAM_COMMON=/path/to/steamapps/common bash tools/apply-patch.sh
 #
 # What it does:
-#   1. Backs up the two files it touches into Survival/Scripts/terrain/.sm_overview-backup/
-#      (only the pristine copies — backups are never overwritten by re-runs)
+#   1. Backs up the two files it touches into '<game root>/.sm_overview-backup/'
+#      (deliberately OUTSIDE Survival/Scripts — the engine enumerates every .lua
+#      under the script tree at startup, and backup copies in there get scanned
+#      and can clobber the patched definitions)
 #   2. Replaces overworld/tile_database.lua with game-patches/tile_database.lua
 #      (adds GetLegacyID; everything else identical to the stock file)
 #   3. Injects game-patches/export_block.lua into terrain_overworld.lua's Load(),
@@ -39,7 +41,19 @@ if [[ -z "$GAME_DIR" || ! -d "$GAME_DIR/Scrap Mechanic" ]]; then
     exit 1
 fi
 TERRAIN="$GAME_DIR/Scrap Mechanic/Survival/Scripts/terrain"
-BACKUP="$TERRAIN/.sm_overview-backup"
+# Backups live at the game root, NOT inside Survival/Scripts — the engine
+# enumerates every .lua under the script tree and will load/scan backup copies
+# placed there (observed on 1.0.5: 'Raw cache miss! .sm_overview-backup/...').
+BACKUP="$GAME_DIR/Scrap Mechanic/.sm_overview-backup"
+# migrate any old in-tree backup dir from previous versions of this script
+if [[ -d "$TERRAIN/.sm_overview-backup" ]]; then
+    mkdir -p "$BACKUP"
+    for f in "$TERRAIN/.sm_overview-backup"/*; do
+        [[ -f "$f" ]] && cp -n "$f" "$BACKUP/"
+    done
+    rm -rf "$TERRAIN/.sm_overview-backup"
+    echo "migrated old in-tree backup dir to $BACKUP"
+fi
 MARKER="sm_overview export"
 
 echo "Game dir: $GAME_DIR/Scrap Mechanic"
