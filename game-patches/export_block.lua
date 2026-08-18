@@ -1,14 +1,26 @@
 -- ============================================================================
--- sm_overview export block  (for Scrap Mechanic 0.6.6 and later, incl. 0.7.x)
+-- sm_overview export block  (for Scrap Mechanic 1.0.x)
 -- ============================================================================
--- Scrap Mechanic 0.6.6 blocked sm.json.save from writing to arbitrary paths,
+-- Scrap Mechanic 0.6.6+ blocked sm.json.save from writing to arbitrary paths,
 -- so the world data is dumped to the game log instead and extracted afterwards.
+--
+-- 1.0 CHANGES vs 0.7.x this block adapts to:
+--   * terrain_overworld.lua's Load() was restructured: the paste point is now
+--     after CreateCellDataStorage() (CreateCellTileStorageKeys no longer exists).
+--   * forEveryCell / GetCellTileUid are no longer guaranteed in scope here, so
+--     this block iterates g_cellData directly (self-contained).
+--   * Cell tiles are identified by uid; GetLegacyID (from the patched
+--     tile_database.lua) resolves the pre-0.6 legacy id the map images use.
+--     Tiles that have no legacy id (new in 0.7/1.0) export as tileid -1 and
+--     render as terrain color on the map.
 --
 -- WHERE TO PASTE THIS:
 --   In your game's  .../Survival/Scripts/terrain/terrain_overworld.lua
 --   inside the Load() function, in the  if sm.terrainData.exists() then  block,
---   PASTE THIS ENTIRE BLOCK immediately AFTER the line:   CreateCellTileStorageKeys()
+--   PASTE THIS ENTIRE BLOCK immediately AFTER the line:   CreateCellDataStorage()
 --   and BEFORE the line:                                    return true
+--
+-- OR automate it with:  bash tools/apply-patch.sh
 --
 -- ALSO REQUIRED (step 2a): replace your game's
 --   .../Survival/Scripts/terrain/overworld/tile_database.lua
@@ -18,20 +30,22 @@
 -- if something goes wrong it logs an error and never breaks your game's load.
 -- ============================================================================
 
-		-- === sm_overview export (0.6.6+ workaround: dump cells.json to the game log) ===
+		-- === sm_overview export (1.0.x: dump cells.json to the game log) ===
 		local _ok, _err = pcall( function()
 			local already = sm.terrainGeneration.getTempData( "STORAGE_CELLJSON" ) or false
 			if already == false then
 				local cells = {}
-				forEveryCell( function( cellX, cellY )
-					local cell = {}
-					cell["x"] = cellX
-					cell["y"] = cellY
-					cell["tileid"] = GetLegacyID( GetCellTileUid( cellX, cellY ) )
-					cell["flags"] = g_cellData.flags[cellY][cellX]
-					cell["rotation"] = g_cellData.rotation[cellY][cellX]
-					cells[#cells+1] = cell
-				end )
+				for cellY = g_cellData.bounds.yMin, g_cellData.bounds.yMax do
+					for cellX = g_cellData.bounds.xMin, g_cellData.bounds.xMax do
+						local cell = {}
+						cell["x"] = cellX
+						cell["y"] = cellY
+						cell["tileid"] = GetLegacyID( g_cellData.uid[cellY][cellX] ) or -1
+						cell["flags"] = g_cellData.flags[cellY][cellX]
+						cell["rotation"] = g_cellData.rotation[cellY][cellX]
+						cells[#cells+1] = cell
+					end
+				end
 				if #cells > 0 then
 					cells[1]["bounds"] = g_cellData.bounds
 					cells[1]["seed"] = g_cellData.seed

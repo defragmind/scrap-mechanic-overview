@@ -27,7 +27,13 @@ import sys
 
 START = "START COPYING AFTER THIS LINE FOR CELLS.JSON"
 STOP = "STOP COPYING BEFORE THIS LINE FOR CELLS.JSON"
-PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \([\d/]+\) \[[^\]]*\] ?")
+# Handles both log formats:
+#   0.7.x:  "01:23:45 (f/s) [Default] msg"
+#   1.0.x:  "01:23:45 (f/s) [Main:360] [Default] msg"
+# Bracket groups are channel/thread tags like [Lua], [Default], [Main:360],
+# [UnnamedThread:952] — constrained to word(\u200b:words)? so the regex can't
+# swallow into the JSON payload itself (which starts with `[{"bounds"...`).
+PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \([\d/]+\) (?:\[[A-Za-z]+(?::[A-Za-z0-9]+)?\] ?)+")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(REPO_ROOT, "viewer", "public", "data", "cells.json")

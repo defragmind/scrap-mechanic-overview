@@ -1,10 +1,10 @@
-
+CURRENT_VERSION = 2
 ----------------------------------------------------------------------------------------------------
 -- Tile database
 ----------------------------------------------------------------------------------------------------
 
 local f_idToTilePath = {}
-local legacyIds = {} -- Added by Arkanorian for use in 0.6.0
+local legacyIds = {} -- Added by Arkanorian for use in 0.6.0 (uid -> legacy tile id, for sm_overview)
 local f_legacyIdUpgradeList = {}
 
 ----------------------------------------------------------------------------------------------------
@@ -46,7 +46,11 @@ function UpgradeCellData( cellData )
 		cellData.version = 2
 		upgraded = true
 	end
-	if upgraded then sm.log.info( "	- Upgraded to version "..tostring( cellData.version ) ) else sm.log.info( "	- No upgrade needed" ) end
+
+	if upgraded then
+		sm.log.info( "	- Upgraded to version "..tostring( cellData.version ) )
+	else
+		sm.log.info( "	- No upgrade needed" ) end
 	return upgraded
 end
 
@@ -80,6 +84,10 @@ function GetPoiType( uid )
 	return f_idToTilePath[tostring( uid )].poiType
 end
 
+function GetTileDatabase()
+	return f_idToTilePath
+end
+
 -- Added by Arkanorian for use in 0.6.0
 function GetLegacyID( uid )
 	if not legacyIds[tostring( uid )] then
@@ -87,6 +95,7 @@ function GetLegacyID( uid )
 	end
 	return legacyIds[tostring( uid )]
 end
+
 ----------------------------------------------------------------------------------------------------
 
 function AddTile( legacyId, path, terrainType, poiType )
@@ -100,7 +109,6 @@ function AddTile( legacyId, path, terrainType, poiType )
 	end
 	if legacyId then
 		AddLegacyUpgrade( legacyId, uid )
-		legacyIds[tostring( uid )] = legacyId -- Added by Arkanorian for use in 0.6.0
 	end
 	return uid
 end
@@ -109,10 +117,11 @@ end
 
 function AddLegacyUpgrade( legacyId, uid )
 	f_legacyIdUpgradeList[legacyId] = uid
+	-- sm_overview: also record the reverse mapping (uid -> legacy id) so the
+	-- export block can resolve images for remapped tiles.
+	legacyIds[tostring( uid )] = legacyId
 end
 
 function GetLegacyUpgrade( legacyId )
 	return f_legacyIdUpgradeList[legacyId]
 end
-
-----------------------------------------------------------------------------------------------------
