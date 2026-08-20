@@ -85,3 +85,29 @@
 - ROAD_SCHEMATICSTATION — cell `23,1`
 - ROAD_SCHEMATICSTATION — cell `29,10`
 - ROAD_SCHEMATICSTATION — cell `-13,13`
+---
+
+# The Mines (Drilling Thunder underground) — 8 depths
+
+Underground is a separate world (id 65535) reached via the excavation island
+(surface cells 43..58 x 20..35) and the service elevator at (-26,-22).
+Fixed-layout levels ship as world definitions; drill depths are procedurally
+cave-generated per seed on first descent.
+
+| Depth | Level | Layout | Map |
+|---|---|---|---|
+| 1 | Mining Hub | fixed 32x32, 3 portals, 8 quest targets (pylon, caster, dispenser, powerrails, smelter, vault door, vault) | /mines/undergroundworld_mininghub.png |
+| 2 | Onboarding | procedural intro caves | — |
+| 3 | Station 1 | fixed 20x20, 2 portals | /mines/undergroundworld_station_01.png |
+| 4 | Drill 1 | procedural caves/pockets/tunnels | — |
+| 5 | Scrapyard | fixed 24x24 | /mines/undergroundworld_scrapyard.png |
+| 6 | Drill 2 | procedural caves/pockets/tunnels | — |
+| 7 | Station 2 | fixed 20x20 | /mines/undergroundworld_station_02.png |
+| 8 | Boss Lobby | fixed 64x64 | /mines/undergroundworld_final_boss_lobby.png |
+| — | Trashbot Boss arena | fixed 16x16 | /mines/undergroundworld_trashbot_boss.png |
+
+Growlab interior layouts (7): /mines/growlab_01..07.png (portals marked green).
+
+Current save state: 2 surface entrances discovered at cells (4,-23)/(5,-23);
+no underground terrain generated yet (descend once to populate it, then the
+extractor can render your seed's actual cave layouts).
